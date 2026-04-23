@@ -1,7 +1,7 @@
 import express from 'express';
 import { check, activate, deactivate, invalidate } from './enforcement.js';
 import { initRedis, cacheStats } from './cache.js';
-import { getCircuitState, activateWithEId } from './ems-client.js';
+import { getCircuitState } from './ems-client.js';
 
 const app  = express();
 const PORT = process.env.PORT || 8081;
