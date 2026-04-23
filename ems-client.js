@@ -49,7 +49,7 @@ async function emsGet(path) {
   const url = `${EMS_BASE_URL}/ems/api/v5${path}`;
   const res = await fetch(url, {
     headers: { Authorization: emsAuth(), Accept: 'application/json' },
-    signal: AbortSignal.timeout(5000),
+    signal: AbortSignal.timeout(10000),
   });
   if (!res.ok) {
     const body = await res.text();
