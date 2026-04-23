@@ -13,8 +13,8 @@ const circuit = {
   failures: 0,
   lastFailure: null,
   state: 'CLOSED', // CLOSED = normal, OPEN = skip EMS calls
-  threshold: 5,
-  resetAfterMs: 30_000,
+  threshold: 10,
+  resetAfterMs: 15000,
 };
 
 function circuitAllow() {
@@ -68,7 +68,7 @@ async function emsPost(path, body) {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(5000),
+    signal: AbortSignal.timeout(10000),
   });
   if (!res.ok) {
     const text = await res.text();
@@ -113,7 +113,7 @@ export async function deactivateEntitlement(entitlementId, activationId) {
     {
       method: 'DELETE',
       headers: { Authorization: emsAuth() },
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(10000),
     }
   );
   if (!res.ok) throw new Error(`EMS deactivate failed: ${res.status}`);
