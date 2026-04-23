@@ -46,11 +46,16 @@ function circuitFailure() {
 // ─── EMS API Calls ────────────────────────────────────────────────────────────
 
 async function emsGet(path) {
-  const res = await fetch(`${EMS_BASE_URL}/ems/api/v5${path}`, {
+  const url = `${EMS_BASE_URL}/ems/api/v5${path}`;
+  const res = await fetch(url, {
     headers: { Authorization: emsAuth(), Accept: 'application/json' },
     signal: AbortSignal.timeout(5000),
   });
-  if (!res.ok) throw new Error(`EMS ${res.status} on GET ${path}`);
+  if (!res.ok) {
+    const body = await res.text();
+    console.error(`[ems] ${res.status} on GET ${path} — ${body}`);
+    throw new Error(`EMS ${res.status} on GET ${path}: ${body}`);
+  }
   return res.json();
 }
 
