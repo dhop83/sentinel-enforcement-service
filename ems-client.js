@@ -88,7 +88,9 @@ export async function activateEntitlement(entitlementId, userId) {
   const uid = await resolveUid(entitlementId);
   console.log(`[ems] Activating uid=${uid}`);
   const body = { activations: { activation: [{ quantity: 1 }] } };
-  const res = await fetch(`${EMS_BASE_URL}/ems/api/v5/entitlements/${uid}/activations`, {
+  const url = `${EMS_BASE_URL}/ems/api/v5/entitlements/${uid}/activations`;
+  console.log(`[ems] POST ${url} body=${JSON.stringify(body)}`);
+  const res = await fetch(url, {
     method: 'POST',
     headers: { Authorization: emsAuth(), Accept: 'application/json', 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -114,3 +116,18 @@ export async function deactivateEntitlement(entitlementId, activationId) {
 }
 
 export function getCircuitState() { return { ...circuit }; }
+
+// Test endpoint — tries activation with eId directly
+export async function activateWithEId(eId) {
+  console.log(`[ems] Trying activation with eId directly: ${eId}`);
+  const body = { activations: { activation: [{ quantity: 1 }] } };
+  const res = await fetch(`${EMS_BASE_URL}/ems/api/v5/entitlements/${eId}/activations`, {
+    method: 'POST',
+    headers: { Authorization: emsAuth(), Accept: 'application/json', 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(10000),
+  });
+  const text = await res.text();
+  console.log(`[ems] eId activation response ${res.status}: ${text.substring(0, 300)}`);
+  return { status: res.status, body: text };
+}
