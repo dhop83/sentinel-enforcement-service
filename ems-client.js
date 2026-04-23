@@ -45,50 +45,8 @@ async function emsGet(path) {
   return res.json();
 }
 
-// eId → internal UID resolver (cached permanently)
-const uidCache = new Map();
-
-async function resolveUid(entitlementId) {
-  if (uidCache.has(entitlementId)) return uidCache.get(entitlementId);
-
-  // Try direct fetch first (works if already internal UID)
-  try {
-    const data = await emsGet(`/entitlements/${entitlementId}`);
-    const uid = data?.entitlement?.id || entitlementId;
-    uidCache.set(entitlementId, uid);
-    return uid;
-  } catch (err) {
-    if (err.message.includes('404')) {
-      // It's an eId — search for internal UID
-      const list = await emsGet(`/entitlements?eId=${entitlementId}&limit=1`);
-      const found = list?.entitlements?.entitlement?.[0];
-      if (!found) throw new Error(`No entitlement found for: ${entitlementId}`);
-      console.log(`[ems] Resolved eId ${entitlementId} → ${found.id}`);
-      uidCache.set(entitlementId, found.id);
-      return found.id;
-    }
-    throw err;
-  }
-}
-
-export async function fetchEntitlementFromEMS(entitlementId) {
-  if (!circuitAllow()) throw new Error('circuit_open');
-  try {
-    const uid = await resolveUid(entitlementId);
-    const data = await emsGet(`/entitlements/${uid}`);
-    circuitSuccess();
-    return data.entitlement || data;
-  } catch (err) {
-    circuitFailure();
-    throw err;
-  }
-}
-
-export async function activateEntitlement(entitlementId, userId) {
-  const uid = await resolveUid(entitlementId);
-  console.log(`[ems] Activating uid=${uid}`);
-  const body = { activations: { activation: [{ quantity: 1 }] } };
-  const url = `${EMS_BASE_URL}/ems/api/v5/entitlements/${uid}/activations`;
+async function emsPost(path, body) {
+  const url = `${EMS_BASE_URL}/ems/api/v5${path}`;
   console.log(`[ems] POST ${url} body=${JSON.stringify(body)}`);
   const res = await fetch(url, {
     method: 'POST',
@@ -98,15 +56,79 @@ export async function activateEntitlement(entitlementId, userId) {
   });
   if (!res.ok) {
     const text = await res.text();
-    console.error(`[ems] activation failed ${res.status}: ${text}`);
-    throw new Error(`EMS ${res.status} on POST activations: ${text}`);
+    console.error(`[ems] ${res.status} on POST ${path} — ${text}`);
+    throw new Error(`EMS ${res.status} on POST ${path}: ${text}`);
   }
   return res.json();
 }
 
+// eId → { internalUid, pkId } resolver (cached permanently)
+const entitlementCache = new Map();
+
+async function resolveEntitlement(entitlementId) {
+  if (entitlementCache.has(entitlementId)) return entitlementCache.get(entitlementId);
+
+  // Try direct fetch first (works if already internal UID)
+  let entData;
+  try {
+    entData = await emsGet(`/entitlements/${entitlementId}?embed=productKeys,customer,activations,productKeyAttributes`);
+  } catch (err) {
+    if (err.message.includes('404')) {
+      // It's an eId — search for internal UID
+      const list = await emsGet(`/entitlements?eId=${entitlementId}&limit=1&embed=productKeys,customer`);
+      const found = list?.entitlements?.entitlement?.[0];
+      if (!found) throw new Error(`No entitlement found for: ${entitlementId}`);
+      console.log(`[ems] Resolved eId ${entitlementId} → ${found.id}`);
+      entData = { entitlement: found };
+    } else {
+      throw err;
+    }
+  }
+
+  const ent = entData?.entitlement || entData;
+  const internalUid = ent?.id;
+  const pkId = ent?.productKeys?.productKey?.[0]?.pkId;
+
+  if (!internalUid) throw new Error(`Could not resolve internal UID for: ${entitlementId}`);
+  if (!pkId) throw new Error(`No pkId found on entitlement: ${entitlementId}`);
+
+  console.log(`[ems] Entitlement resolved — uid=${internalUid} pkId=${pkId}`);
+  const resolved = { internalUid, pkId, raw: ent };
+  entitlementCache.set(entitlementId, resolved);
+  return resolved;
+}
+
+export async function fetchEntitlementFromEMS(entitlementId) {
+  if (!circuitAllow()) throw new Error('circuit_open');
+  try {
+    const { raw } = await resolveEntitlement(entitlementId);
+    circuitSuccess();
+    return raw;
+  } catch (err) {
+    circuitFailure();
+    throw err;
+  }
+}
+
+// Activate using bulkActivate — matches MCP exactly
+export async function activateEntitlement(entitlementId, userId) {
+  const { pkId } = await resolveEntitlement(entitlementId);
+  console.log(`[ems] Activating pkId=${pkId} userId=${userId}`);
+
+  const body = {
+    bulkActivation: {
+      activationProductKeys: {
+        activationProductKey: [{ pkId, activationQuantity: 1 }]
+      }
+    }
+  };
+
+  return emsPost('/activations/bulkActivate', body);
+}
+
 export async function deactivateEntitlement(entitlementId, activationId) {
-  const uid = await resolveUid(entitlementId);
-  const res = await fetch(`${EMS_BASE_URL}/ems/api/v5/entitlements/${uid}/activations/${activationId}`, {
+  const { internalUid } = await resolveEntitlement(entitlementId);
+  const res = await fetch(`${EMS_BASE_URL}/ems/api/v5/entitlements/${internalUid}/activations/${activationId}`, {
     method: 'DELETE',
     headers: { Authorization: emsAuth() },
     signal: AbortSignal.timeout(10000),
@@ -116,18 +138,3 @@ export async function deactivateEntitlement(entitlementId, activationId) {
 }
 
 export function getCircuitState() { return { ...circuit }; }
-
-// Test endpoint — tries activation with eId directly
-export async function activateWithEId(eId) {
-  console.log(`[ems] Trying activation with eId directly: ${eId}`);
-  const body = { activations: { activation: [{ quantity: 1 }] } };
-  const res = await fetch(`${EMS_BASE_URL}/ems/api/v5/entitlements/${eId}/activations`, {
-    method: 'POST',
-    headers: { Authorization: emsAuth(), Accept: 'application/json', 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(10000),
-  });
-  const text = await res.text();
-  console.log(`[ems] eId activation response ${res.status}: ${text.substring(0, 300)}`);
-  return { status: res.status, body: text };
-}
