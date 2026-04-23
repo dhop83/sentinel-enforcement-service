@@ -1,5 +1,3 @@
-// ─── EMS Client with Circuit Breaker ─────────────────────────────────────────
-
 const EMS_BASE_URL = process.env.SENTINEL_EMS_URL;
 const EMS_USER     = process.env.SENTINEL_EMS_USERNAME || 'admin';
 const EMS_PASS     = process.env.SENTINEL_EMS_PASSWORD;
@@ -8,11 +6,10 @@ function emsAuth() {
   return 'Basic ' + Buffer.from(`${EMS_USER}:${EMS_PASS}`).toString('base64');
 }
 
-// ─── Circuit Breaker ──────────────────────────────────────────────────────────
 const circuit = {
   failures: 0,
   lastFailure: null,
-  state: 'CLOSED', // CLOSED = normal, OPEN = skip EMS calls
+  state: 'CLOSED',
   threshold: 10,
   resetAfterMs: 15000,
 };
@@ -29,10 +26,7 @@ function circuitAllow() {
   return true;
 }
 
-function circuitSuccess() {
-  circuit.failures = 0;
-  circuit.state = 'CLOSED';
-}
+function circuitSuccess() { circuit.failures = 0; circuit.state = 'CLOSED'; }
 
 function circuitFailure() {
   circuit.failures++;
@@ -43,11 +37,8 @@ function circuitFailure() {
   }
 }
 
-// ─── EMS API Calls ────────────────────────────────────────────────────────────
-
 async function emsGet(path) {
-  const url = `${EMS_BASE_URL}/ems/api/v5${path}`;
-  const res = await fetch(url, {
+  const res = await fetch(`${EMS_BASE_URL}/ems/api/v5${path}`, {
     headers: { Authorization: emsAuth(), Accept: 'application/json' },
     signal: AbortSignal.timeout(10000),
   });
@@ -59,30 +50,33 @@ async function emsGet(path) {
   return res.json();
 }
 
-async function emsPost(path, body) {
-  const res = await fetch(`${EMS_BASE_URL}/ems/api/v5${path}`, {
-    method: 'POST',
-    headers: {
-      Authorization: emsAuth(),
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(10000),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`EMS ${res.status} on POST ${path}: ${text}`);
-  }
-  return res.json();
-}
+// eId → internal UID cache (permanent, never changes)
+const uidCache = new Map();
 
-// Fetch entitlement + embedded product keys from EMS
-export async function fetchEntitlementFromEMS(entitlementId) {
-  if (!circuitAllow()) throw new Error('circuit_open');
+async function resolveUid(entitlementId) {
+  if (uidCache.has(entitlementId)) return uidCache.get(entitlementId);
 
+  // Try direct fetch — works if already internal UID
   try {
     const data = await emsGet(`/entitlements/${entitlementId}?embed=productKeys,customer`);
+    uidCache.set(entitlementId, data.id);
+    return data.id;
+  } catch (err) {
+    // 404 = it's an eId, search for internal UID
+    const list = await emsGet(`/entitlements?eId=${entitlementId}&limit=1`);
+    const found = list?.entitlements?.entitlement?.[0];
+    if (!found) throw new Error(`No entitlement found for: ${entitlementId}`);
+    console.log(`[ems] Resolved eId ${entitlementId} → ${found.id}`);
+    uidCache.set(entitlementId, found.id);
+    return found.id;
+  }
+}
+
+export async function fetchEntitlementFromEMS(entitlementId) {
+  if (!circuitAllow()) throw new Error('circuit_open');
+  try {
+    const uid = await resolveUid(entitlementId);
+    const data = await emsGet(`/entitlements/${uid}?embed=productKeys,customer`);
     circuitSuccess();
     return data;
   } catch (err) {
@@ -91,38 +85,35 @@ export async function fetchEntitlementFromEMS(entitlementId) {
   }
 }
 
-// Activate against entitlement (consumes 1 token)
 export async function activateEntitlement(entitlementId, userId) {
-  const body = {
-    activations: {
-      activation: [
-        {
-          quantity: 1,
-          activatee: { uniqueId: userId },
-        }
-      ]
-    }
-  };
-  const res = await fetch(`${EMS_BASE_URL}/ems/api/v5/entitlements/${entitlementId}/activations`, {
-    method: "POST",
-    headers: { Authorization: emsAuth(), Accept: "application/json", "Content-Type": "application/json" },
+  const uid = await resolveUid(entitlementId);
+  console.log(`[ems] Activating uid=${uid} userId=${userId}`);
+
+  // Match exactly what MCP sends — quantity only, no activatee wrapper
+  const body = { activations: { activation: [{ quantity: 1 }] } };
+
+  const res = await fetch(`${EMS_BASE_URL}/ems/api/v5/entitlements/${uid}/activations`, {
+    method: 'POST',
+    headers: { Authorization: emsAuth(), Accept: 'application/json', 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(10000),
   });
-  if (!res.ok) { const text = await res.text(); throw new Error(`EMS ${res.status} on POST activations: ${text}`); }
+
+  if (!res.ok) {
+    const text = await res.text();
+    console.error(`[ems] activation failed ${res.status}: ${text}`);
+    throw new Error(`EMS ${res.status} on POST activations: ${text}`);
+  }
   return res.json();
 }
 
-// Deactivate (return token to pool)
 export async function deactivateEntitlement(entitlementId, activationId) {
-  const res = await fetch(
-    `${EMS_BASE_URL}/ems/api/v5/entitlements/${entitlementId}/activations/${activationId}`,
-    {
-      method: 'DELETE',
-      headers: { Authorization: emsAuth() },
-      signal: AbortSignal.timeout(10000),
-    }
-  );
+  const uid = await resolveUid(entitlementId);
+  const res = await fetch(`${EMS_BASE_URL}/ems/api/v5/entitlements/${uid}/activations/${activationId}`, {
+    method: 'DELETE',
+    headers: { Authorization: emsAuth() },
+    signal: AbortSignal.timeout(10000),
+  });
   if (!res.ok) throw new Error(`EMS deactivate failed: ${res.status}`);
   return true;
 }
