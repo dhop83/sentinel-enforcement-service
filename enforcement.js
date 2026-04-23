@@ -36,11 +36,13 @@ function parseEntitlement(raw) {
     }
   }
 
-  const isActive = state === 'ACTIVE' || state === 'COMPLETED';
+  // EMS active states: ENABLE (standard), ACTIVE, COMPLETED all mean entitlement is usable
+  const isActive = ['ENABLE', 'ACTIVE', 'COMPLETED'].includes(state);
   const isExpired = endDate ? new Date(endDate) < new Date() : false;
 
   return {
-    id: raw?.id,
+    id: raw?.id,           // internal UID — needed for activation POST
+    eId: raw?.eId,         // eId — what user sets in env var
     state,
     isActive,
     isExpired,
@@ -216,9 +218,10 @@ export async function activate(entitlementId, featureId, userId) {
     return { success: false, ...validity };
   }
 
-  // Call EMS to activate (consume 1 token)
+  // Call EMS to activate — must use internal UID (id), not eId
   try {
-    const activation = await activateEntitlement(entitlementId, userId);
+    const internalUid = result.entitlement?.id || entitlementId;
+    const activation = await activateEntitlement(internalUid, userId);
 
     // Invalidate cache — qty just changed
     await cacheInvalidate(`ent:${entitlementId}`);
@@ -244,8 +247,12 @@ export async function activate(entitlementId, featureId, userId) {
 // ─── Deactivate: Return Token to Pool ────────────────────────────────────────
 
 export async function deactivate(entitlementId, activationId) {
+  // Try internal UID from cache first
+  const cached = await cacheGet(`ent:${entitlementId}`);
+  const internalUid = cached?.value?.id || entitlementId;
+
   try {
-    await deactivateEntitlement(entitlementId, activationId);
+    await deactivateEntitlement(internalUid, activationId);
     await cacheInvalidate(`ent:${entitlementId}`);
     return { success: true };
   } catch (err) {
