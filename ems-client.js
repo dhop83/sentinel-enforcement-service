@@ -47,7 +47,7 @@ async function emsGet(path) {
 
 async function emsPost(path, body) {
   const url = `${EMS_BASE_URL}/ems/api/v5${path}`;
-  console.log(`[ems] POST ${url} body=${JSON.stringify(body)}`);
+  console.log(`[ems] POST ${url}`);
   const res = await fetch(url, {
     method: 'POST',
     headers: { Authorization: emsAuth(), Accept: 'application/json', 'Content-Type': 'application/json' },
@@ -62,37 +62,38 @@ async function emsPost(path, body) {
   return res.json();
 }
 
-// eId → { internalUid, pkId } resolver (cached permanently)
+// Permanent cache: entitlementId → { internalUid, pkId, raw }
 const entitlementCache = new Map();
 
 async function resolveEntitlement(entitlementId) {
   if (entitlementCache.has(entitlementId)) return entitlementCache.get(entitlementId);
 
-  // Try direct fetch first (works if already internal UID)
-  let entData;
+  // Step 1: resolve to internal UID
+  let internalUid;
   try {
-    entData = await emsGet(`/entitlements/${entitlementId}?embed=productKeys,customer,activations,productKeyAttributes`);
+    const data = await emsGet(`/entitlements/${entitlementId}`);
+    internalUid = data?.entitlement?.id || data?.id;
   } catch (err) {
     if (err.message.includes('404')) {
-      // It's an eId — search for internal UID
-      const list = await emsGet(`/entitlements?eId=${entitlementId}&limit=1&embed=productKeys,customer`);
+      // eId lookup
+      const list = await emsGet(`/entitlements?eId=${entitlementId}&limit=1`);
       const found = list?.entitlements?.entitlement?.[0];
       if (!found) throw new Error(`No entitlement found for: ${entitlementId}`);
-      console.log(`[ems] Resolved eId ${entitlementId} → ${found.id}`);
-      entData = { entitlement: found };
+      internalUid = found.id;
+      console.log(`[ems] Resolved eId ${entitlementId} → ${internalUid}`);
     } else {
       throw err;
     }
   }
 
-  const ent = entData?.entitlement || entData;
-  const internalUid = ent?.id;
+  // Step 2: fetch full entitlement with internal UID (no embed needed — item comes back by default)
+  const fullData = await emsGet(`/entitlements/${internalUid}`);
+  const ent = fullData?.entitlement || fullData;
   const pkId = ent?.productKeys?.productKey?.[0]?.pkId;
 
-  if (!internalUid) throw new Error(`Could not resolve internal UID for: ${entitlementId}`);
   if (!pkId) throw new Error(`No pkId found on entitlement: ${entitlementId}`);
 
-  console.log(`[ems] Entitlement resolved — uid=${internalUid} pkId=${pkId}`);
+  console.log(`[ems] Resolved — uid=${internalUid} pkId=${pkId}`);
   const resolved = { internalUid, pkId, raw: ent };
   entitlementCache.set(entitlementId, resolved);
   return resolved;
@@ -110,10 +111,9 @@ export async function fetchEntitlementFromEMS(entitlementId) {
   }
 }
 
-// Activate using bulkActivate — matches MCP exactly
 export async function activateEntitlement(entitlementId, userId) {
   const { pkId } = await resolveEntitlement(entitlementId);
-  console.log(`[ems] Activating pkId=${pkId} userId=${userId}`);
+  console.log(`[ems] bulkActivate pkId=${pkId} userId=${userId}`);
 
   const body = {
     bulkActivation: {
