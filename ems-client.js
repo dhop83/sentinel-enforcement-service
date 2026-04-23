@@ -103,7 +103,14 @@ export async function activateEntitlement(entitlementId, userId) {
       ]
     }
   };
-  return emsPost(`/entitlements/${entitlementId}/activations`, body);
+  const res = await fetch(`${EMS_BASE_URL}/ems/api/v4/entitlements/${entitlementId}/activations`, {
+    method: "POST",
+    headers: { Authorization: emsAuth(), Accept: "application/json", "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!res.ok) { const text = await res.text(); throw new Error(`EMS ${res.status} on POST activations: ${text}`); }
+  return res.json();
 }
 
 // Deactivate (return token to pool)
