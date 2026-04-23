@@ -89,10 +89,13 @@ export async function fetchEntitlementFromEMS(entitlementId) {
 // Activate against entitlement (consumes 1 token)
 export async function activateEntitlement(entitlementId, userId) {
   const body = {
-    activation: {
-      entitlement: { id: entitlementId },
-      activatee: { uniqueId: userId },
-      quantity: 1,
+    activations: {
+      activation: [
+        {
+          quantity: 1,
+          activatee: { uniqueId: userId },
+        }
+      ]
     }
   };
   return emsPost(`/entitlements/${entitlementId}/activations`, body);
