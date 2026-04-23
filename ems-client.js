@@ -7,11 +7,7 @@ function emsAuth() {
 }
 
 const circuit = {
-  failures: 0,
-  lastFailure: null,
-  state: 'CLOSED',
-  threshold: 10,
-  resetAfterMs: 15000,
+  failures: 0, lastFailure: null, state: 'CLOSED', threshold: 10, resetAfterMs: 15000,
 };
 
 function circuitAllow() {
@@ -27,13 +23,12 @@ function circuitAllow() {
 }
 
 function circuitSuccess() { circuit.failures = 0; circuit.state = 'CLOSED'; }
-
 function circuitFailure() {
   circuit.failures++;
   circuit.lastFailure = Date.now();
   if (circuit.failures >= circuit.threshold) {
     circuit.state = 'OPEN';
-    console.warn(`[circuit] OPEN — EMS unreachable after ${circuit.failures} failures`);
+    console.warn(`[circuit] OPEN after ${circuit.failures} failures`);
   }
 }
 
@@ -50,25 +45,29 @@ async function emsGet(path) {
   return res.json();
 }
 
-// eId → internal UID cache (permanent, never changes)
+// eId → internal UID resolver (cached permanently)
 const uidCache = new Map();
 
 async function resolveUid(entitlementId) {
   if (uidCache.has(entitlementId)) return uidCache.get(entitlementId);
 
-  // Try direct fetch — works if already internal UID
+  // Try direct fetch first (works if already internal UID)
   try {
-    const data = await emsGet(`/entitlements/${entitlementId}?embed=productKeys,customer`);
-    uidCache.set(entitlementId, data.id);
-    return data.id;
+    const data = await emsGet(`/entitlements/${entitlementId}`);
+    const uid = data?.entitlement?.id || entitlementId;
+    uidCache.set(entitlementId, uid);
+    return uid;
   } catch (err) {
-    // 404 = it's an eId, search for internal UID
-    const list = await emsGet(`/entitlements?eId=${entitlementId}&limit=1`);
-    const found = list?.entitlements?.entitlement?.[0];
-    if (!found) throw new Error(`No entitlement found for: ${entitlementId}`);
-    console.log(`[ems] Resolved eId ${entitlementId} → ${found.id}`);
-    uidCache.set(entitlementId, found.id);
-    return found.id;
+    if (err.message.includes('404')) {
+      // It's an eId — search for internal UID
+      const list = await emsGet(`/entitlements?eId=${entitlementId}&limit=1`);
+      const found = list?.entitlements?.entitlement?.[0];
+      if (!found) throw new Error(`No entitlement found for: ${entitlementId}`);
+      console.log(`[ems] Resolved eId ${entitlementId} → ${found.id}`);
+      uidCache.set(entitlementId, found.id);
+      return found.id;
+    }
+    throw err;
   }
 }
 
@@ -76,9 +75,9 @@ export async function fetchEntitlementFromEMS(entitlementId) {
   if (!circuitAllow()) throw new Error('circuit_open');
   try {
     const uid = await resolveUid(entitlementId);
-    const data = await emsGet(`/entitlements/${uid}?embed=productKeys,customer`);
+    const data = await emsGet(`/entitlements/${uid}`);
     circuitSuccess();
-    return data;
+    return data.entitlement || data;
   } catch (err) {
     circuitFailure();
     throw err;
@@ -87,18 +86,14 @@ export async function fetchEntitlementFromEMS(entitlementId) {
 
 export async function activateEntitlement(entitlementId, userId) {
   const uid = await resolveUid(entitlementId);
-  console.log(`[ems] Activating uid=${uid} userId=${userId}`);
-
-  // Match exactly what MCP sends — quantity only, no activatee wrapper
+  console.log(`[ems] Activating uid=${uid}`);
   const body = { activations: { activation: [{ quantity: 1 }] } };
-
   const res = await fetch(`${EMS_BASE_URL}/ems/api/v5/entitlements/${uid}/activations`, {
     method: 'POST',
     headers: { Authorization: emsAuth(), Accept: 'application/json', 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(10000),
   });
-
   if (!res.ok) {
     const text = await res.text();
     console.error(`[ems] activation failed ${res.status}: ${text}`);
@@ -118,6 +113,4 @@ export async function deactivateEntitlement(entitlementId, activationId) {
   return true;
 }
 
-export function getCircuitState() {
-  return { ...circuit };
-}
+export function getCircuitState() { return { ...circuit }; }
