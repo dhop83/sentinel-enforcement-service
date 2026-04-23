@@ -138,7 +138,35 @@ app.delete('/cache/:entitlementId', requireApiKey, async (req, res) => {
   res.json({ invalidated: req.params.entitlementId });
 });
 
-// ─── Boot ─────────────────────────────────────────────────────────────────────
+// ─── GET /debug/ems ───────────────────────────────────────────────────────────
+// Tests raw EMS connectivity and auth — remove in production
+
+app.get('/debug/ems', async (req, res) => {
+  try {
+    const url = `${process.env.SENTINEL_EMS_URL}/ems/api/v5/entitlements?limit=1`;
+    const auth = 'Basic ' + Buffer.from(
+      `${process.env.SENTINEL_EMS_USERNAME}:${process.env.SENTINEL_EMS_PASSWORD}`
+    ).toString('base64');
+
+    const emsRes = await fetch(url, {
+      headers: { Authorization: auth, Accept: 'application/json' },
+      signal: AbortSignal.timeout(5000),
+    });
+
+    const body = await emsRes.text();
+    res.json({
+      status: emsRes.status,
+      ok: emsRes.ok,
+      url,
+      authHeader: auth.substring(0, 20) + '...',
+      body: body.substring(0, 500),
+    });
+  } catch (err) {
+    res.json({ error: err.message });
+  }
+});
+
+
 
 async function boot() {
   await initRedis();
