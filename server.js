@@ -103,8 +103,22 @@ app.get('/debug/activate', async (req, res) => {
   }
 });
 
+// ─── Warmup: prime cache on boot ─────────────────────────────────────────────
+async function warmup() {
+  const ids = (process.env.WARM_ENTITLEMENT_IDS || '').split(',').filter(Boolean);
+  for (const id of ids) {
+    try {
+      await check(id);
+      console.log(`[warmup] primed ${id}`);
+    } catch (e) {
+      console.warn(`[warmup] failed ${id}:`, e.message);
+    }
+  }
+}
+
 async function boot() {
   await initRedis();
+  await warmup();
   app.listen(PORT, () => {
     console.log(`[enforcement] Service running on port ${PORT}`);
     console.log(`[enforcement] Fail mode: ${process.env.ENFORCEMENT_FAIL_MODE || 'open'}`);
